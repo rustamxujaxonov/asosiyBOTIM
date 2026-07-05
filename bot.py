@@ -58,15 +58,16 @@ async def main() -> None:
     logger.info("Ma'lumotlar bazasi jadvallari tayyor.")
 
     # --- Middlewarelar (TARTIB MUHIM!) ---
-    # 1) Throttling — eng birinchi, spamni oldindan cheklash uchun
-    dp.update.middleware(ThrottlingMiddleware(min_interval=0.4))
+    # `dp.update.outer_middleware` orqali ulansa, FSM holatlaridan ham oldin tekshiradi!
+    
+    # 1) Throttling — spamni eng birinchi bosqichda cheklash uchun
+    dp.update.outer_middleware(ThrottlingMiddleware(min_interval=0.4))
 
-    # 2) Database — sessiyani hamma narsadan oldin ochish kerak, chunki
-    #    Subscription middleware ham bazaga murojaat qilishi mumkin
-    dp.update.middleware(DatabaseMiddleware(session_maker))
+    # 2) Database — sessiyani ochish (Subscription ham foydalanishi uchun)
+    dp.update.outer_middleware(DatabaseMiddleware(session_maker))
 
-    # 3) Subscription — bazadan keyin, lekin handlerlardan oldin
-    dp.update.middleware(
+    # 3) Subscription — bazadan keyin, lekin handlerlar va FSM dan oldin
+    dp.update.outer_middleware(
         SubscriptionMiddleware(
             channel_id=config.bot.channel_id,
             channel_url=config.bot.channel_url,

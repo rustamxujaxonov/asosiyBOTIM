@@ -1,22 +1,8 @@
-"""
-middlewares/subscription.py
-------------------------------
-Majburiy obuna middleware.
-
-Har bir Message va CallbackQuery uchun foydalanuvchining belgilangan kanalga
-obuna bo'lganligini tekshiradi. Agar obuna bo'lmasa, botning boshqa hech qanday
-handleriga o'tkazmasdan, obuna so'rovini ko'rsatadi.
-
-MUHIM: 'Obunani tekshirish' tugmasi (CheckSubscription callback) o'zi ham
-shu middleware orqali o'tadi, shuning uchun uni istisno qilib qo'yamiz —
-aks holda foydalanuvchi tugmani bosolmay qoladi (chexicken-and-egg muammosi).
-"""
-
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, Message, Update
 
 from keyboards.inline import CheckSubscription, subscription_keyboard
 
@@ -31,22 +17,23 @@ class SubscriptionMiddleware(BaseMiddleware):
 
     async def __call__(
         self,
-        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
+        handler: Callable[[Update, dict[str, Any]], Awaitable[Any]],
+        event: Update,  # Outer middleware uchun bu Update bo'lishi shart
         data: dict[str, Any],
     ) -> Any:
-        # Faqat Message va CallbackQuery uchun tekshiramiz
-        if not isinstance(event, (Message, CallbackQuery)):
+        # Update ichidan haqiqiy eventni (Message yoki CallbackQuery) ajratib olamiz
+        actual_event = event.message or event.callback_query
+
+        # Agar bu boshqa turdagi update bo'lsa (masalan, inline_query), o'tkazib yuboramiz
+        if not actual_event:
             return await handler(event, data)
 
-        # "Obunani tekshirish" tugmasi bosilganda — bu tekshiruvni handler ichida
-        # alohida amalga oshiramiz (foydalanuvchiga tushunarli javob berish uchun),
-        # shuning uchun middleware darajasida bloklamaymiz.
-        if isinstance(event, CallbackQuery) and event.data == CheckSubscription().pack():
+        # "Obunani tekshirish" tugmasi bosilganda bloklamaslik
+        if event.callback_query and event.callback_query.data == CheckSubscription().pack():
             return await handler(event, data)
 
         bot: Bot = data["bot"]
-        user_id = event.from_user.id
+        user_id = actual_event.from_user.id
 
         is_subscribed = await self._check_subscription(bot, user_id)
 
@@ -60,24 +47,20 @@ class SubscriptionMiddleware(BaseMiddleware):
         )
         keyboard = subscription_keyboard(self.channel_url)
 
-        if isinstance(event, Message):
-            await event.answer(text, reply_markup=keyboard)
-        else:  # CallbackQuery
-            await event.answer("Avval kanalga obuna bo'ling!", show_alert=True)
+        if event.message:
             await event.message.answer(text, reply_markup=keyboard)
+        elif event.callback_query:
+            await event.callback_query.answer("Avval kanalga obuna bo'ling!", show_alert=True)
+            await event.callback_query.message.answer(text, reply_markup=keyboard)
 
         return None  # Handler zanjirini shu yerda to'xtatamiz
 
     async def _check_subscription(self, bot: Bot, user_id: int) -> bool:
-        """
-        Telegram Bot API orqali foydalanuvchining kanaldagi statusini tekshiradi.
-        Bot albatta kanalda ADMIN bo'lishi shart, aks holda get_chat_member ishlamaydi.
-        """
+        """Telegram Bot API orqali foydalanuvchining kanaldagi statusini tekshiradi."""
         try:
             member = await bot.get_chat_member(chat_id=self.channel_id, user_id=user_id)
         except TelegramBadRequest:
-            # Bot kanalda admin emas yoki kanal ID noto'g'ri — xatoni yutmaslik uchun False qaytaramiz
+            # Bot kanalda admin emas yoki kanal ID noto'g'ri
             return False
 
-        # "left" va "kicked" — obuna bo'lmagan holatlar
         return member.status not in ("left", "kicked")
